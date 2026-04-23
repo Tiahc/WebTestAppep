@@ -173,7 +173,7 @@ class MaxstreamExtractor:
                             logger.warning(f"Cloudflare detected on {url} (Proxy: {proxy}), trying FlareSolverr fallback...")
                             # Fallback to the global smart_request utility
                             if proxy: await session.close()
-                            return await smart_request(method, url, headers=kwargs.get("headers"), data=kwargs.get("data"), proxies=self.proxies)
+                            return await smart_request(method, url, headers=kwargs.get("headers"), post_data=kwargs.get("data"), proxies=self.proxies)
 
                         if proxy: await session.close()
                         return text
@@ -181,7 +181,7 @@ class MaxstreamExtractor:
                         # Might be Cloudflare block, try FlareSolverr immediately for this path
                         logger.warning(f"HTTP {response.status} on {url}, checking with FlareSolverr...")
                         if proxy: await session.close()
-                        return await smart_request(method, url, headers=kwargs.get("headers"), data=kwargs.get("data"), proxies=self.proxies)
+                        return await smart_request(method, url, headers=kwargs.get("headers"), post_data=kwargs.get("data"), proxies=self.proxies)
                     else:
                         logger.warning(f"Request to {url} failed (Status {response.status}) [Proxy: {proxy}, StaticIP: {use_ip}]")
             except Exception as e:
