@@ -37,7 +37,7 @@ from urllib.parse import urlparse, urljoin, urlencode
 import aiohttp
 from bs4 import BeautifulSoup, SoupStrainer
 
-from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, get_solver_proxy_url
+from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, get_solver_proxy_url, GLOBAL_PROXIES
 from utils.cookie_cache import CookieCache
 
 logger = logging.getLogger(__name__)
@@ -69,10 +69,13 @@ class DeltabitExtractor:
         self.bypass_warp_active = bypass_warp
 
 
-    async def _request_flaresolverr(self, cmd: str, url: str = None, post_data: str = None, session_id: str = None) -> dict:
+    async def _request_flaresolverr(self, cmd: str, url: str = None, post_data: str = None, session_id: str = None, force_bypass_warp: bool = None) -> dict:
         """Performs a request via FlareSolverr."""
         if not settings.flaresolverr_url:
             raise ExtractorError("FlareSolverr URL not configured")
+
+        # Determine which bypass state to use
+        current_bypass = force_bypass_warp if force_bypass_warp is not None else self.bypass_warp_active
 
         endpoint = f"{settings.flaresolverr_url.rstrip('/')}/v1"
         payload = {
@@ -83,12 +86,12 @@ class DeltabitExtractor:
         if url: 
             payload["url"] = url
             # Determina dinamicamente il proxy per questo specifico URL
-            proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies, bypass_warp=self.bypass_warp_active)
+            proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies, bypass_warp=current_bypass)
             if proxy:
                 payload["proxy"] = {"url": proxy}
                 solver_proxy = get_solver_proxy_url(proxy)
                 fs_headers["X-Proxy-Server"] = solver_proxy
-                logger.debug(f"Deltabit: Passing explicit proxy to solver: {solver_proxy} (bypass_warp={self.bypass_warp_active})")
+                logger.debug(f"Deltabit: Passing explicit proxy to solver: {solver_proxy} (bypass_warp={current_bypass})")
 
         if post_data: payload["postData"] = post_data
         if session_id: payload["session"] = session_id
@@ -121,8 +124,14 @@ class DeltabitExtractor:
         
         # 1. Handle redirectors (safego.cc, clicka.cc, etc.)
         if any(d in url.lower() for d in ["safego.cc", "clicka.cc", "clicka"]):
+            # I redirector usano WARP (bypass_warp_active è False di default o viene forzato nel metodo)
             url = await self._solve_redirector(url)
-        # 2. Normalize URL to embed format
+        
+        # 2. Una volta su Deltabit, passiamo a warp=off (IP Reale) per coerenza tra estrazione e streaming
+        self.bypass_warp_active = True
+        logger.debug(f"🔄 Switching to warp=off for Deltabit domain: {url}")
+
+        # 3. Normalize URL to embed format
         # Normalize URL (only base domains, no forced /e/)
         if "deltabit.co" in url.lower():
             url = url.replace("deltabit.co/ ", "deltabit.co/")
@@ -222,7 +231,7 @@ class DeltabitExtractor:
             ocr = None
 
         try:
-            sess_res = await self._request_flaresolverr("sessions.create")
+            sess_res = await self._request_flaresolverr("sessions.create", force_bypass_warp=False)
             session_id = sess_res.get("session")
 
             current_url = url
@@ -231,7 +240,8 @@ class DeltabitExtractor:
                     break
                 
                 logger.debug(f"Deltabit: Redirector step {step+1} at {current_url}")
-                res = await self._request_flaresolverr("request.get", current_url, session_id=session_id)
+                # Forziamo SEMPRE warp=on (bypass_warp=False) per i redirector
+                res = await self._request_flaresolverr("request.get", current_url, session_id=session_id, force_bypass_warp=False)
                 solution = res.get("solution", {})
                 text = solution.get("response", "")
                 current_url = solution.get("url", current_url)
@@ -338,7 +348,7 @@ class DeltabitExtractor:
         finally:
             if session_id:
                 try:
-                    await self._request_flaresolverr("sessions.destroy", session_id=session_id)
+                    await self._request_flaresolverr("sessions.destroy", session_id=session_id, force_bypass_warp=False)
                 except:
                     pass
         
